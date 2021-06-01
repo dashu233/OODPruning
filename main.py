@@ -16,6 +16,7 @@ import torch
 import torchvision
 import torch.utils.data
 
+from utils import check_sparsity
 from domainbed import datasets
 from domainbed import hparams_registry
 from domainbed import algorithms
@@ -59,6 +60,8 @@ if __name__ == "__main__":
     parser.add_argument('--pruning_method',type=str,default=None,help="Pruning method for model. default is not to prune")
     parser.add_argument('--init_model',type=str,default=None,
         help="state dict saved by save_checkpoint, used as init model state dict")
+    parser.add_argument('--prune_gamma',type=float,default=0.2,
+                        help="pruned percent for each prune step")
 
 
     args = parser.parse_args()
@@ -230,35 +233,38 @@ if __name__ == "__main__":
     prune_step_list = [_*n_steps//10+1 for _ in range(10)]
     if args.pruning_method == 'LTH':
         for name, module in algorithm.named_modules():
-            # prune 20% of connections in all 2D-conv layers
             if isinstance(module, torch.nn.Conv2d):
                 prune.l1_unstructured(module, name='weight', amount=0)
-            # prune 40% of connections in all linear layers
             elif isinstance(module, torch.nn.Linear):
                 prune.l1_unstructured(module, name='weight', amount=0)
-        org_dict = algorithm.state_dict()
+        forg_dict = algorithm.state_dict()
+        org_dict = {}
+        for key in forg_dict:
+            if 'org' in key:
+                org_dict[key] = forg_dict[key]
+        del forg_dict
     for step in range(start_step, n_steps):
 
         step_start_time = time.time()
         if args.pruning_method == 'IMP':
             if step in prune_step_list:
                 for name, module in algorithm.named_modules():
-                    # prune 20% of connections in all 2D-conv layers
                     if isinstance(module, torch.nn.Conv2d):
-                        prune.l1_unstructured(module, name='weight', amount=0.25)
-                    # prune 40% of connections in all linear layers
+                        prune.l1_unstructured(module, name='weight', amount=args.prune_gamma)
                     elif isinstance(module, torch.nn.Linear):
-                        prune.l1_unstructured(module, name='weight', amount=0.25)
+                        prune.l1_unstructured(module, name='weight', amount=args.prune_gamma)
         if args.pruning_method == 'LTH':
             if step in prune_step_list:
                 for name, module in algorithm.named_modules():
-                    # prune 20% of connections in all 2D-conv layers
                     if isinstance(module, torch.nn.Conv2d):
-                        prune.l1_unstructured(module, name='weight', amount=0.25)
-                    # prune 40% of connections in all linear layers
+                        prune.l1_unstructured(module, name='weight', amount=args.prune_gamma)
                     elif isinstance(module, torch.nn.Linear):
-                        prune.l1_unstructured(module, name='weight', amount=0.25)
-                algorithm.load_state_dict(org_dict)
+                        prune.l1_unstructured(module, name='weight', amount=args.prune_gamma)
+
+                tmp_dict = algorithm.state_dict()
+                tmp_dict.update(org_dict)
+                algorithm.load_state_dict(tmp_dict)
+                del tmp_dict
 
         minibatches_device = [(x.to(device), y.to(device))
             for x,y in next(train_minibatches_iterator)]
@@ -288,7 +294,8 @@ if __name__ == "__main__":
             for name, loader, weights in evals:
                 acc = misc.accuracy(algorithm, loader, weights, device)
                 results[name+'_acc'] = acc
-
+            sparse = check_sparsity(algorithm.network)
+            results['sparse'] = sparse
             results_keys = sorted(results.keys())
             if results_keys != last_results_keys:
                 misc.print_row(results_keys, colwidth=12)
