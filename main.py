@@ -22,11 +22,96 @@ from domainbed import hparams_registry
 from domainbed import algorithms
 from domainbed.lib import misc
 from domainbed.lib.fast_data_loader import InfiniteDataLoader, FastDataLoader
+from domainbed.kde import opt_kde
+from domainbed.feature_checker import feature_extractor_for_pipline
 
 import torch
 from torch import nn
 import torch.nn.utils.prune as prune
 import torch.nn.functional as F
+
+def torch_to_numpy(d):
+    return {
+        key: d[key].cpu().numpy()
+        for key in d.keys()
+        if d[key] is not None
+    }
+
+def to_str(lis):
+    s = ""
+    for w in lis:
+        s = s + str(w).ljust(10," ") + ", "
+    return s
+
+def calculate_variation(algorithm,step,
+                        eval_loader_names, eval_loaders,dataset,args,whether_write=False):
+    # Return:
+    # a list of shape [9][4]
+    # each line contains: train variation, test variation, train_info, remain_feature
+    # recommend: use [6][0](train) or [6][1](test) as a criterion of variation
+    if args.output_dir[-1] == '/':
+        marker = args.output_dir + "extracted_{}".format(step)
+    else:
+        marker = args.output_dir + "/" + "extracted_{}".format(step)
+
+    datas = feature_extractor_for_pipline(algorithm, zip(
+        eval_loader_names, eval_loaders), device, dataset.num_classes, marker)
+    env_list = ['env{}'.format(i) for i in range(len(dataset))]
+    train_env = copy.deepcopy(env_list)
+    for ev in args.test_envs:
+        train_env.remove('env{}'.format(ev))
+    if args.dataset == 'ColoredMNIST':
+        feature_num = 128
+    else:
+        feature_num = 512 if hparams['resnet18'] else 2048
+    opt_for_pipline = opt_kde(env_list, train_env, dataset.num_classes,
+                              feature_num, datas, sample_size=10000, device=device)
+    compute_result = torch_to_numpy(
+        opt_for_pipline.forward(cal_info=True))
+    compute_result['eig_value'] = opt_for_pipline.eig_val()
+
+    if whether_write:
+        mmstr = '_mean'
+        new_for_save = np.array(compute_result)
+        np.save(marker + "before_new_L1_" + mmstr + "_save.npy", new_for_save)
+        del new_for_save
+
+    train_distance = compute_result['train_results'].max(axis=0)
+    test_distance = compute_result['test_results'].max(axis=0)
+    info = compute_result['train_info'][0]
+    print("———————— before info filter ————————")
+    print("train_dis:", train_distance)
+    print("test_dis:", test_distance)
+    print("info:", info)
+    line = ''
+    threshold_list = [0.05*i for i in range(9)]
+    res_list = []
+    for thr in threshold_list:
+        select_index = [i for i in range(len(info)) if info[i] >= thr]
+        # print(select_index)
+        if len(select_index) == 0:
+            train_mean = float('nan')
+            test_mean = float('nan')
+            info_mean = float('nan')
+            line += to_str([train_mean, test_mean, info_mean, 0])
+            res_list.append([train_mean, test_mean, info_mean, 0])
+        else:
+            train_mean = train_distance[select_index].mean()
+            test_mean = test_distance[select_index].mean()
+            info_mean = info[select_index].mean()
+            line += to_str([train_mean, test_mean, info_mean, len(select_index)])
+            res_list.append([train_mean, test_mean, info_mean, len(select_index)])
+    line += '\n'
+    del compute_result
+
+    if whether_write and args.output_result_file is not None:
+        with open(args.output_dir + '/' + 'before_' + args.output_result_file, 'a+') as f:
+            f.write(line)
+    return res_list
+
+
+
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Domain generalization')
@@ -62,6 +147,8 @@ if __name__ == "__main__":
         help="state dict saved by save_checkpoint, used as init model state dict")
     parser.add_argument('--prune_gamma',type=float,default=0.2,
                         help="pruned percent for each prune step")
+    parser.add_argument('--subdir',type=str,default=None)
+    parser.add_argument('--debug',action='store_true')
 
 
     args = parser.parse_args()
@@ -76,6 +163,10 @@ if __name__ == "__main__":
         algorithm_dict = alg_dict['model_dict']
 
     os.makedirs(args.output_dir, exist_ok=True)
+    if args.subdir:
+        args.output_dir = os.path.join(args.output_dir,args.subdir)
+        os.makedirs(args.output_dir, exist_ok=True)
+
     sys.stdout = misc.Tee(os.path.join(args.output_dir, 'out.txt'))
     sys.stderr = misc.Tee(os.path.join(args.output_dir, 'err.txt'))
 
@@ -243,6 +334,12 @@ if __name__ == "__main__":
             if 'org' in key:
                 org_dict[key] = forg_dict[key]
         del forg_dict
+
+    if args.debug:
+        res = calculate_variation(algorithm,0,eval_loader_names,eval_loaders,dataset,args)
+        print(res)
+        exit()
+
     for step in range(start_step, n_steps):
 
         step_start_time = time.time()
@@ -323,3 +420,4 @@ if __name__ == "__main__":
 
     with open(os.path.join(args.output_dir, 'done'), 'w') as f:
         f.write('done')
+
