@@ -16,7 +16,7 @@ import torch
 import torchvision
 import torch.utils.data
 
-from utils import check_sparsity
+from utils import check_sparsity,speed_up_inference_for_channel
 from domainbed import datasets
 from domainbed import hparams_registry
 from domainbed import algorithms
@@ -107,7 +107,15 @@ def calculate_variation(algorithm,step,
     if whether_write and args.output_result_file is not None:
         with open(args.output_dir + '/' + 'before_' + args.output_result_file, 'a+') as f:
             f.write(line)
-    return res_list
+    return res_list[6]
+    # train_variation, test_variation, //train_info, feature_num
+
+
+    # val_acc = avg(train_out_acc)
+
+    # model val_acc > max_val_acc - 0.1
+    # A=std(val), B=std(variation)
+    # val - A/B variation
 
 
 
@@ -335,10 +343,36 @@ if __name__ == "__main__":
                 org_dict[key] = forg_dict[key]
         del forg_dict
 
+
+
+    evals = zip(eval_loader_names, eval_loaders, eval_weights)
+    start_time = time.time()
+    with torch.no_grad():
+        for name, loader, weights in evals:
+            acc = misc.accuracy(algorithm, loader, weights, device)
+            print(name, acc)
+    end_time = time.time()
+    print('pretrained time:', -start_time + end_time)
+
+
     if args.debug:
-        res = calculate_variation(algorithm,0,eval_loader_names,eval_loaders,dataset,args)
-        print(res)
-        exit()
+        for name, module in algorithm.named_modules():
+            if isinstance(module, torch.nn.Conv2d):
+                prune.ln_structured(module, name='weight', amount=0.4, dim=0, n=2)
+                speed_up_inference_for_channel(module)
+            elif isinstance(module, torch.nn.Linear):
+                prune.ln_structured(module, name='weight', amount=0.4, dim=0, n=2)
+                speed_up_inference_for_channel(module)
+
+        evals = zip(eval_loader_names, eval_loaders, eval_weights)
+        start_time = time.time()
+        with torch.no_grad():
+            for name, loader, weights in evals:
+                acc = misc.accuracy(algorithm, loader, weights, device)
+                print(name, acc)
+        end_time = time.time()
+        print('speed up time:', -start_time + end_time)
+
 
     for step in range(start_step, n_steps):
 
@@ -350,6 +384,14 @@ if __name__ == "__main__":
                         prune.l1_unstructured(module, name='weight', amount=args.prune_gamma)
                     elif isinstance(module, torch.nn.Linear):
                         prune.l1_unstructured(module, name='weight', amount=args.prune_gamma)
+        if args.pruning_method == 'SIMP':
+            if step in prune_step_list:
+                for name, module in algorithm.named_modules():
+                    if isinstance(module, torch.nn.Conv2d):
+                        prune.ln_structured(module, name='weight', amount=args.prune_gamma,dim=0,n=2)
+                    elif isinstance(module, torch.nn.Linear):
+                        prune.ln_structured(module, name='weight', amount=args.prune_gamma,dim=0,n=2)
+
         if args.pruning_method == 'LTH':
             if step in prune_step_list:
                 for name, module in algorithm.named_modules():
@@ -376,8 +418,6 @@ if __name__ == "__main__":
         for key, val in step_vals.items():
             checkpoint_vals[key].append(val)
 
-
-
         if (step % checkpoint_freq == 0) or (step == n_steps - 1):
             results = {
                 'step': step,
@@ -386,6 +426,11 @@ if __name__ == "__main__":
 
             for key, val in checkpoint_vals.items():
                 results[key] = np.mean(val)
+            variation = calculate_variation(algorithm,step,eval_loader_names,eval_loaders,
+                                dataset,args)
+
+            results['train_variation'] = float(variation[0])
+            results['test_variation'] = float(variation[1])
 
             evals = zip(eval_loader_names, eval_loaders, eval_weights)
             for name, loader, weights in evals:
@@ -415,6 +460,28 @@ if __name__ == "__main__":
 
             if args.save_model_every_checkpoint:
                 save_checkpoint(f'model_step{step}.pkl')
+
+    evals = zip(eval_loader_names, eval_loaders, eval_weights)
+    start_time = time.time()
+    for name, loader, weights in evals:
+        acc = misc.accuracy(algorithm, loader, weights, device)
+        print(name, acc)
+    end_time = time.time()
+    print('pruned time:',-start_time+end_time)
+    for name, module in algorithm.named_modules():
+        if isinstance(module, torch.nn.Conv2d):
+            prune.remove(module,'weight')
+            #prune.l1_unstructured(module, name='weight', amount=0)
+        elif isinstance(module, torch.nn.Linear):
+            prune.remove(module,'weight')
+
+    evals = zip(eval_loader_names, eval_loaders, eval_weights)
+    start_time = time.time()
+    for name, loader, weights in evals:
+        acc = misc.accuracy(algorithm, loader, weights, device)
+        print(name, acc)
+    end_time = time.time()
+    print('removed time:', -start_time + end_time)
 
     save_checkpoint('model.pkl')
 
