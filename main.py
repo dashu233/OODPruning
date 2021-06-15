@@ -329,7 +329,7 @@ if __name__ == "__main__":
 
     last_results_keys = None
 
-    prune_step_list = [_*n_steps//10+1 for _ in range(10)]
+    prune_step_list = [_*n_steps//10+1 for _ in range(1,10)]
     if args.pruning_method == 'LTH':
         for name, module in algorithm.named_modules():
             if isinstance(module, torch.nn.Conv2d):
@@ -339,8 +339,8 @@ if __name__ == "__main__":
         forg_dict = algorithm.state_dict()
         org_dict = {}
         for key in forg_dict:
-            if 'org' in key:
-                org_dict[key] = forg_dict[key]
+            if 'orig' in key:
+                org_dict[key] = copy.deepcopy(forg_dict[key])
         del forg_dict
 
 
@@ -402,8 +402,6 @@ if __name__ == "__main__":
 
                 tmp_dict = algorithm.state_dict()
                 tmp_dict.update(org_dict)
-                algorithm.load_state_dict(tmp_dict)
-                del tmp_dict
 
         minibatches_device = [(x.to(device), y.to(device))
             for x,y in next(train_minibatches_iterator)]
