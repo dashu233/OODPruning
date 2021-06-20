@@ -329,8 +329,8 @@ if __name__ == "__main__":
 
     last_results_keys = None
 
-    prune_step_list = [_*n_steps//10+1 for _ in range(1,10)]
-    if args.pruning_method == 'LTH':
+    prune_step_list = [_*n_steps//30+1 for _ in range(2,30)]
+    if args.pruning_method == 'LTH' or 'GLTH':
         for name, module in algorithm.named_modules():
             if isinstance(module, torch.nn.Conv2d):
                 prune.l1_unstructured(module, name='weight', amount=0)
@@ -342,7 +342,6 @@ if __name__ == "__main__":
             if 'orig' in key:
                 org_dict[key] = copy.deepcopy(forg_dict[key])
         del forg_dict
-
 
 
     evals = zip(eval_loader_names, eval_loaders, eval_weights)
@@ -403,6 +402,24 @@ if __name__ == "__main__":
                 tmp_dict = algorithm.state_dict()
                 tmp_dict.update(org_dict)
 
+        if args.pruning_method == 'GLTH':
+            if step in prune_step_list:
+                para_to_prune = []
+                for name, module in algorithm.named_modules():
+                    if isinstance(module, torch.nn.Conv2d):
+                        para_to_prune.append((module,'weight'))
+                    elif isinstance(module, torch.nn.Linear):
+                        para_to_prune.append((module, 'weight'))
+
+                prune.global_unstructured(
+                    para_to_prune,
+                    pruning_method=prune.L1Unstructured,
+                    amount=0.2,
+                )
+
+                tmp_dict = algorithm.state_dict()
+                tmp_dict.update(org_dict)
+
         minibatches_device = [(x.to(device), y.to(device))
             for x,y in next(train_minibatches_iterator)]
         if args.task == "domain_adaptation":
@@ -424,11 +441,11 @@ if __name__ == "__main__":
 
             for key, val in checkpoint_vals.items():
                 results[key] = np.mean(val)
-            variation = calculate_variation(algorithm,step,eval_loader_names,eval_loaders,
-                                dataset,args)
-
-            results['train_variation'] = float(variation[0])
-            results['test_variation'] = float(variation[1])
+            # variation = calculate_variation(algorithm,step,eval_loader_names,eval_loaders,
+            #                     dataset,args)
+            #
+            # results['train_variation'] = float(variation[0])
+            # results['test_variation'] = float(variation[1])
 
             evals = zip(eval_loader_names, eval_loaders, eval_weights)
             for name, loader, weights in evals:
