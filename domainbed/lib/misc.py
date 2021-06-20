@@ -134,6 +134,47 @@ def accuracy(network, loader, weights, device):
 
     return correct / total
 
+
+def get_feature(network, loader, device, num_classes, f_star, perturbation=False, return_raw=False):  # loader为一个环境的
+    # here, f_star is a vector representing the initial point of each feature
+    # perturbation indicates whether to add a sign(nabla) term before calculating the norm
+    # return_raw indicates whether to return the direct difference
+
+    raw_difference = [[] for i in range(num_classes)]
+    FSSD = [[] for i in range(num_classes)]
+    label_set = [torch.tensor(label).to(device)
+                 for label in range(num_classes)]
+
+    network.eval()
+    set_zero = True if f_star is None else False
+    with torch.no_grad():
+
+        network.to(device)
+        for x, y in loader:
+            x = x.to(device)
+            y = y.to(device)
+            feature = network.feature(x)  # get feature
+
+            for label in range(num_classes):
+
+                # label_difference = (label_set[label] == y).reshape((-1,1)) * difference
+                select = (label_set[label] == y)
+                label_difference = feature[select, :]
+                if not set_zero:
+                    label_difference = label_difference - f_star[label].reshape((1, -1))
+                # if perturbation:
+                #    sign_nabla = torch.sign(torch.autograd.grad(difference,x)[0])  # a matrix, #feature * dim(x)
+                #    modified_x = sign_nabla + torch.mm(torch.ones_like(f_star),x)   # \tilde x
+                FSSD[label].append(torch.norm(input=label_difference, p=1, dim=1))
+                if return_raw:
+                    raw_difference[label].append(label_difference)
+    network.train()
+    final_fssd = [torch.cat(FSSD[i], dim=0) for i in range(num_classes)]
+    if not return_raw:
+        return final_fssd
+    return final_fssd, [torch.cat(raw_difference[i], dim=0) for i in range(num_classes)]
+
+
 class Tee:
     def __init__(self, fname, mode="a"):
         self.stdout = sys.stdout
